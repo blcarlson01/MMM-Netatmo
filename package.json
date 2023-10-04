@@ -23,7 +23,7 @@
     "grunt-markdownlint": "latest",
     "grunt-stylelint": "latest",
     "grunt-yamllint": "latest",
-    "stylelint": "^13.1.0",
+    "stylelint": "^15.10.1",
     "stylelint-config-standard": "^20.0.0"
   },
   "dependencies": {
