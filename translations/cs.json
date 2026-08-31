@@ -16,12 +16,17 @@
   "WINDANGLE": "Vítr (směr)",
   "GUSTSTRENGTH": "Poryvy",
   "GUSTANGLE": "Poryvy (směr)",
-
   "UP": "stoupá",
   "STABLE": "stály",
   "DOWN": "klesá",
   "UNDEFINED": "nedostupné",
-
+  "AQI_GOOD": "Dobrá",
+  "AQI_MODERATE": "Průměrná",
+  "AQI_UNHEALTHY_SENSITIVE": "Nezdravá pro citlivé skupiny",
+  "AQI_UNHEALTHY": "Nezdravá",
+  "AQI_VERY_UNHEALTHY": "Velmi nezdravá",
+  "AQI_HAZARDOUS": "Nebezpečná",
+  "AQI_POLLUTANT": "Hlavní znečišťující látka",
   "WIFI": "WiFi",
   "WIFI_STATUS": "WiFi",
   "RADIO": "Radio signal",
@@ -30,7 +35,6 @@
   "BATTERY": "Baterie",
   "BATTERY_PERCENT": "Baterie",
   "LAST_MESSAGE": "poslední kontakt",
-
   "DBM": " dBm",
   "DB": " dB",
   "%": " %",

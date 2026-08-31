@@ -16,12 +16,17 @@
   "WINDANGLE": "Wind (richting)",
   "GUSTSTRENGTH": "Stoten",
   "GUSTANGLE": "Stoten (richting)",
-
   "UP": "stijgend",
   "STABLE": "stabiel",
   "DOWN": "dalend",
   "UNDEFINED": "niet beschikbaar",
-
+  "AQI_GOOD": "Goed",
+  "AQI_MODERATE": "Matig",
+  "AQI_UNHEALTHY_SENSITIVE": "Ongezond voor gevoelige groepen",
+  "AQI_UNHEALTHY": "Ongezond",
+  "AQI_VERY_UNHEALTHY": "Zeer ongezond",
+  "AQI_HAZARDOUS": "Gevaarlijk",
+  "AQI_POLLUTANT": "Belangrijkste vervuiler",
   "WIFI": "WiFi",
   "WIFI_STATUS": "WiFi",
   "RADIO": "Radio signaal",
@@ -30,7 +35,6 @@
   "BATTERY": "Batterij",
   "BATTERY_PERCENT": "Batterij",
   "LAST_MESSAGE": "laatste contact",
-
   "DBM": " dBm",
   "DB": " dB",
   "%": " %",

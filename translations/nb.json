@@ -16,12 +16,17 @@
   "WINDANGLE": "Vind (retning)",
   "GUSTSTRENGTH": "Vindkast",
   "GUSTANGLE": "Vindkast (retning)",
-
   "UP": "Økende",
   "STABLE": "Stabilt",
   "DOWN": "Fallende",
   "UNDEFINED": "Ikke tilgjengelig",
-
+  "AQI_GOOD": "God",
+  "AQI_MODERATE": "Moderat",
+  "AQI_UNHEALTHY_SENSITIVE": "Usunn for sensitive grupper",
+  "AQI_UNHEALTHY": "Usunn",
+  "AQI_VERY_UNHEALTHY": "Svært usunn",
+  "AQI_HAZARDOUS": "Farlig",
+  "AQI_POLLUTANT": "Hovedforurensning",
   "WIFI": "WiFi",
   "WIFI_STATUS": "WiFi",
   "RADIO": "Radio signal",
@@ -30,7 +35,6 @@
   "BATTERY": "Batteri",
   "BATTERY_PERCENT": "Batteri",
   "LAST_MESSAGE": "Sist kontakt",
-
   "DBM": " dBm",
   "DB": " dB",
   "%": " %",

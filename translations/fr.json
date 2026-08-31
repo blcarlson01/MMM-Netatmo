@@ -16,12 +16,17 @@
   "WINDANGLE": "vent",
   "GUSTSTRENGTH": "rafale",
   "GUSTANGLE": "rafale",
-
   "UP": "hausse",
   "STABLE": "stable",
   "DOWN": "baisse",
   "UNDEFINED": "non disponible",
-
+  "AQI_GOOD": "Bon",
+  "AQI_MODERATE": "Modéré",
+  "AQI_UNHEALTHY_SENSITIVE": "Malsain pour les groupes sensibles",
+  "AQI_UNHEALTHY": "Malsain",
+  "AQI_VERY_UNHEALTHY": "Très malsain",
+  "AQI_HAZARDOUS": "Dangereux",
+  "AQI_POLLUTANT": "Polluant principal",
   "WIFI": "WiFi",
   "WIFI_STATUS": "WiFi",
   "RADIO": "signal radio",
@@ -30,7 +35,6 @@
   "BATTERY": "batterie",
   "BATTERY_PERCENT": "batterie",
   "LAST_MESSAGE": "connexion dernière",
-
   "DBM": " dBm",
   "DB": " dB",
   "%": " %",
