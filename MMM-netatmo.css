@@ -1,29 +1,37 @@
 .MMM-netatmo .weathericon {
   display: inline-block;
 }
+
 .MMM-netatmo .loading,
 .MMM-netatmo .loadTimer,
 .MMM-netatmo .updated {
   display: inline-block;
 }
+
 .MMM-netatmo .textgreen {
   color: #32cd32;
 }
+
 .MMM-netatmo .textyellow {
   color: #cacd32;
 }
+
 .MMM-netatmo .textpurple {
   color: #361b80;
 }
+
 .MMM-netatmo .textorange {
   color: #ffa500;
 }
+
 .MMM-netatmo .textred {
-  color: #ff0000;
+  color: #f00;
 }
+
  .MMM-netatmo .textdeepred {
   color: #6e0202;
 }
+
 .MMM-netatmo .textgray {
   color: #666;
 }
@@ -49,51 +57,37 @@
   justify-content: center;
 }
 
+.MMM-netatmo .bubbles .module {
+  display: grid;
+  grid-template-columns: repeat(12, 1fr);
+  grid-template-rows: auto auto auto auto auto;
+  margin-bottom: 3px;
+  margin-top: 3px;
+}
+
 .MMM-netatmo .bubbles.horizontal .module {
   margin-bottom: 3px;
   margin-left: 3px;
   flex-shrink: 0;
 }
 
-.MMM-netatmo .bubbles .module {
-  margin-bottom: 3px;
-  margin-top: 3px;
-}
-
 .module .displayTemp {
-
   text-align: left;
-}
-.MMM-netatmo .bubbles .module .visual {
-  border-radius: 1em;
-  box-shadow: 0 0 .9em 1em;
-  height: .1em;
-  margin: 1.5em auto;
-  width: .1em;
-}
-
-.MMM-netatmo .bubbles .module .good {
-  background-color: #32cd32;
-  color: #32cd32;
-}
-.MMM-netatmo .bubbles .module .average {
-  background-color: #ffa500;
-  color: #ffa500;
-}
-.MMM-netatmo .bubbles .module .bad {
-  background-color: #ff0000;
-  color: #ff0000;
 }
 
 .MMM-netatmo .bubbles .module .humidity {
   text-align: center;
   width: 5em;
 }
+
 .MMM-netatmo svg.loading {
   height: .6em;
   width: .6em;
 }
-/* csslint ignore:start */
+
+/* cx/cy/r as CSS (not just SVG attributes) are valid per the SVG2/CSS Painting
+   spec and work in evergreen browsers; stylelint's known-property list predates them. */
+/* stylelint-disable declaration-property-value-no-unknown */
 .MMM-netatmo svg.loading circle {
   cx: 50;
   cy: 50;
@@ -101,48 +95,48 @@
   r: 40;
   stroke-linecap: round;
 }
-/* csslint ignore:end */
+/* stylelint-enable declaration-property-value-no-unknown */
 .MMM-netatmo svg.loading .inner {
-  stroke: #ffffff;
+  stroke: #fff;
   stroke-width: 6;
 }
+
 .MMM-netatmo svg.loading .outer {
-  stroke: #aaaaaa;
+  stroke: #aaa;
   stroke-width: 10;
 }
+
 .MMM-netatmo svg.loadTimer {
   height: .5em;
   margin: .2em 0;
   vertical-align: middle;
   width: .5em;
 }
-.MMM-netatmo svg.loadTimer .loader {
-  fill: #000000;
-}
-.MMM-netatmo svg.loadTimer .border {
-  fill: #aaaaaa;
-}
-.MMM-netatmo .updated {
 
+.MMM-netatmo svg.loadTimer .loader {
+  fill: #000;
+}
+
+.MMM-netatmo svg.loadTimer .border {
+  fill: #aaa;
+}
+
+.MMM-netatmo .updated {
   padding: 0 .5em;
   vertical-align: middle;
-}
-
-.MMM-netatmo .bubbles .module {
-  display: grid;
-  grid-template-columns: repeat(12, 1fr);
-  grid-template-rows: auto auto auto auto auto;
-  /* border: 1px solid red; */
 }
 
 .MMM-netatmo .bubbles .module .title {
   grid-column: 1 / 7;
   line-height: .9 ;
 }
+
 .MMM-netatmo .bubbles .module .primary {
   grid-column: 1 / 7;
+
   /* border: 2px solid darkblue;  */
 }
+
 .MMM-netatmo .bubbles .module .secondary {
   grid-row: 1 / 3;
   grid-column: 7 / -1;
@@ -151,32 +145,39 @@
 
 .MMM-netatmo .bubbles .module > div {
   grid-column : 1 / -1;
-  /*border: 1px solid yellow; */
+
+  /* border: 1px solid yellow; */
 }
 
 .MMM-netatmo .bubbles .data_container {
   display: flex;  
   line-height: .8 ;
+
   /* border: 2px solid green; */
 
 }
+
 .MMM-netatmo .bubbles .data_container_align {
   display: flex;  
   line-height: .8 ;
   align-items: baseline; 
   justify-content: space-around;
+
   /* border: 2px solid green; */
 
 }
+
 .MMM-netatmo .bubbles .module .data_icon {
   padding-right: 0.1em;
 }
 
 .MMM-netatmo .bubbles .data_container .data_left {
   line-height: .8 ;
+
   /* border: 2px solid white; */
 
 }
+
 .MMM-netatmo .bubbles .data_container .data_right {
   display: flex;
   flex-flow: column nowrap;
@@ -184,7 +185,7 @@
 }
 
 .MMM-netatmo .bubbles .data_container .data_right .data_right_up {
-  /*background-color: #96ceb4;	 */
+  /* background-color: #96ceb4;	 */
   line-height: .8 ;
 
 }
@@ -193,7 +194,8 @@
   margin-top: auto;
   line-height: .8 ;
   margin-left: auto;
-  /*background-color: #ff6f69; */
+
+  /* background-color: #ff6f69; */
 }
 
 .MMM-netatmo .bubbles .data_container .data_right .data_right_down_status {
@@ -201,17 +203,42 @@
   line-height: .8 ;
   margin-left: auto;
   font-size: .1em;
-  /*background-color: #ff6f69; */
-}
 
-.x-medium {
-
-  font-size:170%;
+  /* background-color: #ff6f69; */
 }
 
 .xxsmall {
   font-size: 10px;
   line-height: 15px;
+}
+
+.xsmall {
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.small {
+  font-size: 14px;
+  line-height: 18px;
+}
+
+.medium {
+  font-size: 20px;
+  line-height: 24px;
+}
+
+.large {
+  font-size: 32px;
+  line-height: 36px;
+}
+
+.x-medium {
+  font-size: 170%;
+}
+
+.xlarge {
+  font-size: 48px;
+  line-height: 48px;
 }
 
 .MMM-netatmo .bubbles .module .name {
@@ -234,6 +261,7 @@
   text-align: center;
   width: 5em;
 }
+
 .MMM-netatmo .bubbles .module .displayInfos {
   padding: 0 .5em;
   text-align: left;
@@ -247,8 +275,61 @@
 .MMM-netatmo .bubbles .module .flash {
   animation: flasher 1s linear infinite;
 }
+
 @keyframes flasher {
   50% {
     opacity: 0;
   }
+}
+
+.MMM-netatmo .bubbles .module .displayAQI,
+.MMM-netatmo .bubbles .module .displayCO2 {
+  text-align: center;
+}
+
+.MMM-netatmo .bubbles .module .AQI,
+.MMM-netatmo .bubbles .module .CO2 {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.MMM-netatmo .bubbles .module .gaugeWrap {
+  position: relative;
+  width: 90%;
+}
+
+.MMM-netatmo .bubbles .module .gauge {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.MMM-netatmo .bubbles .module .gaugeTrack {
+  stroke: rgb(255 255 255 / 15%);
+}
+
+.MMM-netatmo .bubbles .module .gaugeText {
+  position: absolute;
+  top: 62%;
+  left: 50%;
+  width: 100%;
+  line-height: 1.15;
+  text-align: center;
+  transform: translate(-50%, -50%);
+}
+
+.MMM-netatmo .bubbles .module .gaugeValue {
+  font-size: 1.4em;
+  font-weight: bold;
+}
+
+.MMM-netatmo .bubbles .module .gaugeLabel {
+  font-size: .6em;
+}
+
+.MMM-netatmo .bubbles .module .aqiPollutant {
+  font-size: .6em;
+  opacity: .7;
+  margin-top: .3em;
 }

@@ -4,7 +4,7 @@
  * MIT Licensed.
  */
 
-/* global $, Q, moment, Module, Log */
+/* global moment, Module, Log, NetatmoFormatter */
 
 // Manage the PIR and the module.hidden at the same time
 var UserPresence = true; // by default we are present (no PIR sensor to cut)
@@ -15,6 +15,7 @@ var DateUpdateDataAirQuality = 0; // The last date we updated the info Air Quali
 
 var AirQualityImpact = "Wait..";
 var AirQualityValue = 0; //Initial air quality
+var AirQualityPollutant = "";
 
 //Mapping Modules and order. This way they can be referenced from any function.
 let ModuleMap = new Map();
@@ -64,12 +65,76 @@ const NetatmoDataType = {
 	HEALTH_IDX: "health_idx", //Air Quality Health Index
 };
 
+// Small vanilla-DOM helpers replacing the previous jQuery-based rendering.
+function el(tag, className) {
+	var node = document.createElement(tag);
+	if (className) { node.className = className; }
+	return node;
+}
+// Joins class name fragments, dropping empty ones -- e.g. cls("a", formatter.icon(...))
+// where icon() can return "" -- the way jQuery's .addClass("") silently no-ops.
+function cls() {
+	return Array.prototype.slice.call(arguments).filter(Boolean).join(" ");
+}
+function append(parent, content) {
+	if (content === undefined || content === null) { return parent; }
+	if (content instanceof Node) {
+		parent.appendChild(content);
+	} else {
+		parent.appendChild(document.createTextNode(String(content)));
+	}
+	return parent;
+}
+// Only for developer-authored content (translation strings, e.g. "CO<sub>2</sub>") --
+// never for Netatmo/aqicn-sourced values, which must go through append()/setText().
+function appendMarkup(parent, html) {
+	parent.insertAdjacentHTML("beforeend", String(html));
+	return parent;
+}
+function setText(node, text) {
+	node.textContent = (text === undefined || text === null) ? "" : String(text);
+	return node;
+}
+function parseMarkup(html) {
+	var container = document.createElement("div");
+	container.innerHTML = html;
+	return container.firstElementChild;
+}
+
+// SVG elements need createElementNS + setAttribute("class", ...) -- assigning
+// .className on an SVGElement sets a read-only SVGAnimatedString, not a plain
+// string, so el()/cls() above don't work for them.
+var SVG_NS = "http://www.w3.org/2000/svg";
+function svgEl(tag, attrs) {
+	var node = document.createElementNS(SVG_NS, tag);
+	if (attrs) {
+		for (var key in attrs) {
+			if (Object.prototype.hasOwnProperty.call(attrs, key)) {
+				node.setAttribute(key, attrs[key]);
+			}
+		}
+	}
+	return node;
+}
+function polarPoint(cx, cy, r, mathDegrees) {
+	var rad = mathDegrees * Math.PI / 180;
+	return { x: cx + r * Math.cos(rad), y: cy - r * Math.sin(rad) };
+}
+// gaugeDeg 0 = left (AQI min), gaugeDeg 180 = right (AQI max), sweeping over the top.
+function gaugeArcPath(cx, cy, r, gaugeStartDeg, gaugeEndDeg) {
+	var start = polarPoint(cx, cy, r, 180 - gaugeStartDeg);
+	var end = polarPoint(cx, cy, r, 180 - gaugeEndDeg);
+	return "M " + start.x.toFixed(2) + " " + start.y.toFixed(2)
+		+ " A " + r + " " + r + " 0 0 1 " + end.x.toFixed(2) + " " + end.y.toFixed(2);
+}
+
 Module.register("MMM-Netatmo", {
 	// default config,
 	defaults: {
+		debug: false, // set true for verbose per-tick update-scheduling logs
 		units: config.units,
-		//for AirQuality
-		lang: config.language,
+		//for AirQuality (outdoor, via aqicn.org)
+		aqicnToken: null, // required: get a free token at https://aqicn.org/data-platform/token/
 		location: "germany/berlin",
 		updateIntervalAirQuality: 600, // en secondes = every 30 minutes
 		refreshToken: null,
@@ -88,12 +153,11 @@ Module.register("MMM-Netatmo", {
 		showModuleStatus: true,
 		showModuleFirmware: true,
 		NAValue: "--",
+		moduleOrder: [], // optional; omit to display every module/device
 		api: {
 			base: "https://api.netatmo.com/",
 			authEndpoint: "oauth2/token",
-			authPayload: "grant_type=refresh_token&refresh_token={0}&client_id={1}&client_secret={2}",
-			dataEndpoint: "api/getstationsdata",
-			dataPayload: "access_token={0}"
+			dataEndpoint: "api/getstationsdata"
 		}
 	},
 
@@ -136,33 +200,51 @@ Module.register("MMM-Netatmo", {
 		}
 	},
 
+	socketNotificationReceived: function (notification, payload) {
+		// node_helper.js broadcasts to every MMM-Netatmo instance; ignore notifications meant for other instances.
+		if (!payload || payload.identifier !== this.identifier) { return; }
+
+		if (notification === "NETATMO_DATA") {
+			this.config.refreshToken = payload.refreshToken;
+			this.renderAll(payload.data);
+		} else if (notification === "NETATMO_ERROR") {
+			this.renderError(payload.error);
+		} else if (notification === "NETATMO_AQI_DATA") {
+			this.renderAirQuality(payload);
+		} else if (notification === "NETATMO_AQI_ERROR") {
+			Log.error(this.name + ": " + payload.error);
+		}
+	},
+
 	GestionUpdateIntervalNetatmo: function () {
 
-		Log.log("GestionUpdateIntervalNetatmo - Netatmo data: "
-			+ moment.unix(lastUpdateServeurNetatmo).format("dd - HH:mm:ss") +
-			" - AirQuality data : " + moment.unix(DateUpdateDataAirQuality).format("dd - HH:mm:ss") +
-			" - and we are : " + moment.unix(Date.now() / 1000).format("dd - HH:mm:ss"));
+		// This runs every updatesIntervalDisplay seconds for the module's entire
+		// lifetime, so the verbose diagnostics (moment formatting, etc.) are gated
+		// behind config.debug instead of running unconditionally on every tick.
+		if (this.config.debug) {
+			Log.log("GestionUpdateIntervalNetatmo - Netatmo data: "
+				+ moment.unix(lastUpdateServeurNetatmo).format("dd - HH:mm:ss") +
+				" - AirQuality data : " + moment.unix(DateUpdateDataAirQuality).format("dd - HH:mm:ss") +
+				" - and we are : " + moment.unix(Date.now() / 1000).format("dd - HH:mm:ss"));
+		}
 
 		// make sure to have a user present in front of the screen (sensor PIR) and that the module is well displayed
 		if (UserPresence === true && ModuleNetatmoHidden === false) {
 
-			Log.log("Netatmo is displayed and user present! We need to update if necessary");
-
 			if (Date.now() / 1000 - DateUpdateDataAirQuality > this.config.updateIntervalAirQuality) {
 				Log.log("Data AirQuality have more than " + this.config.updateIntervalAirQuality + " s, update requested");
 				this.loadAirQuality();
-			} else {
+			} else if (this.config.debug) {
 				var calcul = Date.now() / 1000 - DateUpdateDataAirQuality;
 				Log.log("Data AirQuality ont :" + calcul +
 					"it's less " + this.config.updateIntervalAirQuality + " s, we do not update");
-
 			}
 
 			if (Date.now() / 1000 - lastUpdateServeurNetatmo > 660) {// we are more than 11min after the last datas of the server -> it is necessary to update
 
 				Log.log("Data Netatmo have more than 11 min, update requested");
 				this.updateLoad();
-			} else {
+			} else if (this.config.debug) {
 				Log.log("Data Netatmo are less than 11 min, no update");
 			}
 
@@ -186,24 +268,30 @@ Module.register("MMM-Netatmo", {
 
 	//Air Quality
 	loadAirQuality: function () {
+		if (!this.config.aqicnToken) {
+			if (!this._aqicnTokenWarned) {
+				Log.warn(this.name + ": no aqicnToken configured, skipping outdoor air quality lookup. See README for how to get a free token from aqicn.org.");
+				this._aqicnTokenWarned = true;
+			}
+			return;
+		}
 
-		//	Log.log("Fct loadAirQuality - OK DATA LOAD.");
-		_aqiFeed({
-			lang: this.config.lang,
+		// aqicn.org data is fetched via node_helper.js (see NETATMO_FETCH_AQI)
+		this.sendSocketNotification("NETATMO_FETCH_AQI", {
+			identifier: this.identifier,
 			city: this.config.location,
-			callback: this.renderAirQuality.bind(this) // error log here when fct called 2 times too close. Not impact
+			token: this.config.aqicnToken
 		});
 	},
 
-	renderAirQuality: function (data) {
+	renderAirQuality: function (payload) {
 
-		AirQualityValue = $(data.aqit).find("span").text();
-		AirQualityImpact = data.impact;
+		AirQualityValue = payload.aqi;
+		AirQualityImpact = this.translate(NetatmoFormatter.aqiCategory(payload.aqi));
+		AirQualityPollutant = NetatmoFormatter.pollutantLabel(payload.dominantPollutant);
 
 		//We memorize the date of our data upload
 		DateUpdateDataAirQuality = Date.now() / 1000;
-
-		//Log.log("renderAirQuality at "+ moment.unix(DateUpdateDataAirQuality).format('dd - HH:mm:ss') +" - value : " + AirQualityValue + ' - impact : '+ AirQualityImpact);
 
 	},
 
@@ -212,44 +300,15 @@ Module.register("MMM-Netatmo", {
 	updateLoad: function () {
 		Log.log("Netatmo : updateLoad"); //Every 10 min (update interval), step 1 of the update
 
-		var that = this;
-		return Q.fcall(
-			this.load.token.bind(that),
-			this.renderError.bind(that)
-		).then(
-			this.load.data.bind(that),
-			this.renderError.bind(that)
-		).then(
-			this.renderAll.bind(that)
-		);
-	},
-
-	load: {
-		token: function () {
-
-			//Log.log("Netatmo : load - token");
-			return Q($.ajax({
-				type: "POST",
-				url: this.config.api.base + this.config.api.authEndpoint,
-				data: this.config.api.authPayload.format(
-					this.config.refreshToken,
-					this.config.clientId,
-					this.config.clientSecret)
-			}));
-		},
-
-		data: function (data) {
-
-			// Log.log("Netatmo : load - data");
-			//Log.info(this.name + " token loaded "+data.access_token);
-			this.config.refreshToken = data.refresh_token;
-			// call for station data
-			return Q($.ajax({
-				url: this.config.api.base + this.config.api.dataEndpoint,
-				data: this.config.api.dataPayload.format(data.access_token)
-			}));
-
-		}
+		// The token refresh and getstationsdata call happen in node_helper.js so that
+		// clientSecret/refreshToken/access_token never enter the renderer process.
+		this.sendSocketNotification("NETATMO_FETCH_DATA", {
+			identifier: this.identifier,
+			api: this.config.api,
+			clientId: this.config.clientId,
+			clientSecret: this.config.clientSecret,
+			refreshToken: this.config.refreshToken
+		});
 	},
 
 	renderAll: function (data) {
@@ -262,261 +321,16 @@ Module.register("MMM-Netatmo", {
 		// render modules
 		this.dom = this.getDesign("bubbles").render(device);
 		this.updateDom(this.config.animationSpeed);
-		return Q({});
 	},
 
 	renderError: function (reason) {
 		console.log("error " + reason);
 	},
-	formatter: {
-		value: function (dataType, value) {
-			if (!value || value === NAValue) { return value; }
-			switch (dataType) {
-				case NetatmoDataType.CO2:
-					return value.toFixed(0);
-				case NetatmoDataType.NOISE:
-					return value.toFixed(0);
-				case NetatmoDataType.HUMIDITY:
-					return value.toFixed(0);
-				case NetatmoDataType.RAIN:
-				case NetatmoDataType.SUM_RAIN_1:
-				case NetatmoDataType.SUM_RAIN_24:
-					if (Units.toUpperCase() === "IMPERIAL") {
-						return this.mm2Inch(value).toFixed(3);
-					}
-					return value.toFixed(1);
-				case NetatmoDataType.GUST_ANGLE:
-				case NetatmoDataType.WIND_ANGLE_MAX:
-				case NetatmoDataType.WIND_ANGLE:
-					return value.toFixed(0);
-				case NetatmoDataType.WIND_STRENGTH:
-				case NetatmoDataType.GUST_STRENGTH:
-				case NetatmoDataType.WIND_STRENGTH_MAX:
-					switch (WindUnit.toUpperCase()) {
-						case "BFT":
-							return this.kmh2Beaufort(value);
-						case "MPH":
-							return this.kmh2mph(value).toFixed(0);
-						case "MS":
-							return this.kmh2ms(value).toFixed(1);
-						case "KT":
-							return this.kmh2kt(value).toFixed(1);
-						case "KMH":
-						default:
-							return value.toFixed(0);
-					};
-				case NetatmoDataType.HEALTH_IDX: //Air Quality Health Index
-					if (value = 0) { return "Healthy"; }
-					if (value = 1) { return "Fine"; }
-					if (value = 2) { return "Fair"; }
-					if (value = 3) { return "Poor"; }
-					if (value = 4) { return "Unhealthy"; }
-				case NetatmoDataType.BATTERY:
-				case NetatmoDataType.RADIO:
-					return value.toFixed(0);
-				case NetatmoDataType.WIFI:
-				case NetatmoDataType.PRESSURE:
-					return value.toFixed(0);
-				case NetatmoDataType.TEMPERATURE:
-				case NetatmoDataType.TEMP_MIN:
-				case NetatmoDataType.TEMP_MAX:
-					if (Units.toUpperCase() === "IMPERIAL") {
-						return this.tempC2F(value).toFixed(1);
-					}
-					return value.toFixed(1);
-				default:
-					return value;
-			}
-		},
-		unit: function (dataType) {
-			switch (dataType) {
-				case NetatmoDataType.CO2:
-					return "PPM";
-				case NetatmoDataType.NOISE:
-					return "DB";
-				case NetatmoDataType.HUMIDITY:
-				case NetatmoDataType.BATTERY:
-				case NetatmoDataType.RADIO:
-					return "%";
-				case NetatmoDataType.WIFI:
-					return "DBM";
-				case NetatmoDataType.RAIN:
-					if (Units.toUpperCase() === "IMPERIAL") {
-						return "INCH";
-					}
-					return "MM";
-				case NetatmoDataType.SUM_RAIN_1:
-					return "1H";
-				case NetatmoDataType.SUM_RAIN_24:
-					return "24H";
-				case NetatmoDataType.GUST_STRENGTH:
-				case NetatmoDataType.WIND_STRENGTH:
-				case NetatmoDataType.WIND_STRENGTH_MAX:
-					return WindUnit.toUpperCase();
-				case NetatmoDataType.PRESSURE:
-					return "MBAR";
-				case NetatmoDataType.GUST_ANGLE:
-				case NetatmoDataType.WIND_ANGLE:
-				case NetatmoDataType.WIND_ANGLE_MAX:
-				case NetatmoDataType.TEMPERATURE:
-				case NetatmoDataType.TEMP_MIN:
-				case NetatmoDataType.TEMP_MAX:
-					return "°";
-				default:
-					return "";
-			}
-		},
-		icon: function (dataType, value) {
-			switch (dataType) {
-				case NetatmoDataType.PRESSURE_TREND:
-				case NetatmoDataType.TEMP_TREND:
-					return value === "up" ? "fa fa-caret-up" : value === "down" ? "fa fa-caret-down" : value === "stable" ? "fa fa-caret-right" : "";
-				case NetatmoDataType.CO2:
-					return "";
-				case NetatmoDataType.NOISE:
-					//70dB vacuum cleaner. 40dB: library
-					return value > 70 ? "fa fa-volume-up" : value > 50 ? "fa fa-volume-down" : "fa fa-volume-off";
-				case NetatmoDataType.HUMIDITY:
-					return "wi wi-humidity";
-				case NetatmoDataType.BATTERY:
-					return value > 95 ? "fa fa-battery-full" : value >= 70 ? "fa fa-battery-three-quarters" : value >= 45 ? "fa fa-battery-half" : value >= 15 ? "fa fa-battery-quarter" : "fa fa-battery-empty";
-				case NetatmoDataType.WIFI:
-					return "fa fa-wifi";
-				case NetatmoDataType.RADIO:
-					return "fa fa-signal";
-				//return "fa fa-signal fa-fw";
-				case NetatmoDataType.RAIN:
-				case NetatmoDataType.SUM_RAIN_1:
-				case NetatmoDataType.SUM_RAIN_24:
-					return "wi wi-raindrop";
-				case NetatmoDataType.GUST_STRENGTH:
-				case NetatmoDataType.WIND_STRENGTH:
-				case NetatmoDataType.WIND_STRENGTH_MAX:
-					if (value < 0) { return "wi wi-strong-wind"; }
-					let valueBFT = this.kmh2Beaufort(value);
-					if (valueBFT >= 0) {
-						return "wi wi-wind-beaufort-" + valueBFT;
-					}
-					return "wi wi-strong-wind";
-				case NetatmoDataType.GUST_ANGLE:
-				case NetatmoDataType.WIND_ANGLE:
-				case NetatmoDataType.WIND_ANGLE_MAX:
-					if (value < 0) { return "wi wi-wind from-0-deg"; }
-					return "wi wi-wind from-" + value + "-deg";
-				case NetatmoDataType.PRESSURE:
-					return "wi wi-barometer";
-				case NetatmoDataType.TEMPERATURE:
-				case NetatmoDataType.TEMP_MIN:
-					return "fa fa-thermometer-empty";
-				case NetatmoDataType.TEMP_MAX:
-					return "fa fa-thermometer-full";
-				default:
-					return "";
-			}
-		},
-		status: function (dataType, value) {
-			if (!value) { return ""; }
-			switch (dataType) {
-				case NetatmoDataType.CO2:
-					return value <= 800 ? "good" : value <= 1600 ? "average" : "bad";
-				case NetatmoDataType.NOISE:
-					//70dB vacuum cleaner. 40dB: library
-					return value > 70 ? "textred" : value > 50 ? "textorange" : "textgreen";
-				case NetatmoDataType.BATTERY:
-					return value >= 70 ? "textgreen" : value >= 45 ? "textyellow" : value >= 15 ? "textorange" : "textred";
-				case NetatmoDataType.WIFI:
-					return value < 60 ? "textgreen" : value < 86 ? "textorange" : "textred";
-				case NetatmoDataType.RADIO:
-					return value >= 70 ? "textgreen" : value >= 45 ? "textyellow" : value >= 15 ? "textorange" : "textred";
-				case NetatmoDataType.HUMIDITY:
-					let status = "";
-					if (value >= 40 && value <= 60) {
-						status = "textgreen";
-					} else if (value < 40 && value > 30 || value < 70 && value > 60) {
-						status = "textorange";
-					} else if (value <= 30) {
-						status = "textred";
-					} else if (value >= 70) {
-						status = "textpurple";
-					}
-					return status;
-				default:
-					return "";
-			}
-		},
-		kmh2ms: function (kmh) {
-			// https://www.weather.gov/media/epz/wxcalc/windConversion.pdf
-			return 0.277778 * kmh;
-		},
-		kmh2Beaufort: function (kmh) {
-			//http://www.home.hs-karlsruhe.de/~pach0003/informatik_1/aufgaben/en/doc/src-html/de/hska/java/exercises/objects/WindSpeed.html#line.59
-			let beaufort = (Math.pow(kmh / 3.01, 0.6666)).toFixed(0);
-			if (beaufort > 12) {
-				beaufort = 12;
-			}
-
-			return beaufort;
-		},
-		kmh2kt: function (kmh) {
-			// https://www.weather.gov/media/epz/wxcalc/windConversion.pdf
-			return 0.5399568 * kmh;
-		},
-		kmh2mph: function (kmh) {
-			// https://www.weather.gov/media/epz/wxcalc/windConversion.pdf
-			return 0.621371 * kmh;
-		},
-		tempC2F: function (c) {
-			return (1.8 * c) + 32;
-		},
-		mm2Inch: function (mm) {
-			return mm / 25.4;
-		},
-		// ms2Beaufort: function (ms) {
-		// 	// https://stackoverflow.com/questions/60001991/how-to-convert-windspeed-between-beaufort-scale-and-m-s-and-vice-versa-in-javasc
-		// 	return Math.ceil(Math.cbrt(Math.pow(ms / 0.836, 2)));
-		// },
-		deg2Cardinal: function (deg) {
-			if (deg > 11.25 && deg <= 33.75) {
-				return "NNE";
-			} else if (deg > 33.75 && deg <= 56.25) {
-				return "NE";
-			} else if (deg > 56.25 && deg <= 78.75) {
-				return "ENE";
-			} else if (deg > 78.75 && deg <= 101.25) {
-				return "E";
-			} else if (deg > 101.25 && deg <= 123.75) {
-				return "ESE";
-			} else if (deg > 123.75 && deg <= 146.25) {
-				return "SE";
-			} else if (deg > 146.25 && deg <= 168.75) {
-				return "SSE";
-			} else if (deg > 168.75 && deg <= 191.25) {
-				return "S";
-			} else if (deg > 191.25 && deg <= 213.75) {
-				return "SSW";
-			} else if (deg > 213.75 && deg <= 236.25) {
-				return "SW";
-			} else if (deg > 236.25 && deg <= 258.75) {
-				return "WSW";
-			} else if (deg > 258.75 && deg <= 281.25) {
-				return "W";
-			} else if (deg > 281.25 && deg <= 303.75) {
-				return "WNW";
-			} else if (deg > 303.75 && deg <= 326.25) {
-				return "NW";
-			} else if (deg > 326.25 && deg <= 348.75) {
-				return "NNW";
-			} else {
-				return "N";
-			}
-		},
-
-	},
 	getDesign: function (design) {
 
 		//	Log.log("Netatmo : getDesign");
 		var that = this;
-		var formatter = this.formatter;
+		var formatter = NetatmoFormatter.create(NetatmoDataType, { naValue: NAValue, units: Units, windUnit: WindUnit });
 		var translator = this.translate;
 		return {
 			bubbles: (function (formatter, translator, that) {
@@ -540,10 +354,11 @@ Module.register("MMM-Netatmo", {
 						if (that.config.NAValue && that.config.moduleOrder.length > 0) { NAValue = that.config.NAValue; }
 						if (that.config.windUnit) { WindUnit = that.config.windUnit; }
 						if (that.config.units) { Units = that.config.units; }
-						var sResult = $("<div/>").addClass("modules").addClass("bubbles");
+						formatter = NetatmoFormatter.create(NetatmoDataType, { naValue: NAValue, units: Units, windUnit: WindUnit });
+						var sResult = el("div", "modules bubbles");
 						if (that.config.horizontal) {
-							sResult.addClass("horizontal");
-							if (that.config.horizontalOverflow) { sResult.addClass("overflow"); }
+							sResult.classList.add("horizontal");
+							if (that.config.horizontalOverflow) { sResult.classList.add("overflow"); }
 						}
 
 						if (that.config.moduleOrder && that.config.moduleOrder.length > 0) {
@@ -595,21 +410,21 @@ Module.register("MMM-Netatmo", {
 								switch (module.type) {
 									case NetatmoModuleType.MAIN:
 									case NetatmoModuleType.INDOOR:
-										sResult.append(this.module(module));
+										append(sResult, this.module(module));
 										break;
 									case NetatmoModuleType.OUTDOOR:
-										sResult.append(this.module(module));
+										append(sResult, this.module(module));
 										break;
 
 									case NetatmoModuleType.WIND:
 										if (!(that.config.displayWindInOutdoor)) {
-											sResult.append(this.module(module));
+											append(sResult, this.module(module));
 										}
 										break;
 
 									case NetatmoModuleType.RAIN:
 										if (!(that.config.displayRainInOutdoor)) {
-											sResult.append(this.module(module));
+											append(sResult, this.module(module));
 										}
 										break;
 								}
@@ -623,35 +438,34 @@ Module.register("MMM-Netatmo", {
 					},
 					//Defined the overall structure of the display of each element of the module (indoor, outdoor). The last line being in the getDom
 					module: function (module) {
-						var type;
-						var value;
 						Log.log("MMM-Netatmo add module: " + module.module_name);
-						var result = $("<div/>").addClass("module").append(
-							$("<div/>").addClass("title name xsmall").append(module.module_name)
-						);
-						this.addPrimary(module).appendTo(result);
-						this.addSecondary(module).appendTo(result);
+						var result = el("div", "module");
+						var title = el("div", "title name xsmall");
+						setText(title, module.module_name);
+						append(result, title);
+						append(result, this.addPrimary(module));
+						append(result, this.addSecondary(module));
 						if (!(this.addLastSeen(result, module))) {
-							this.addData(module).appendTo(result);
+							append(result, this.addData(module));
 						}
-						if (that.config.showModuleStatus) { this.addStatus(module).appendTo(result); }
-						$("<div/>").addClass("line").appendTo(result);
-						return result[0].outerHTML;
+						if (that.config.showModuleStatus) { append(result, this.addStatus(module)); }
+						append(result, el("div", "line"));
+						return result;
 					},
 					addPrimary: function (module) {
 						//Log.log("MMM-Netatmo addPrimary module: " + module.module_name);
-						let result = $("<div/>").addClass("primary");
+						let result = el("div", "primary");
 						switch (module.type) {
 							case NetatmoModuleType.MAIN:
 							case NetatmoModuleType.INDOOR:
 							case NetatmoModuleType.OUTDOOR:
-								result.append(this.displayTemp(module));
+								append(result, this.displayTemp(module));
 								break;
 							case NetatmoModuleType.RAIN:
-								result.append(this.displayRain(module));
+								append(result, this.displayRain(module));
 								break;
 							case NetatmoModuleType.WIND:
-								result.append(this.displayWind(module));
+								append(result, this.displayWind(module));
 								break;
 							default:
 								break;
@@ -661,20 +475,20 @@ Module.register("MMM-Netatmo", {
 					},
 					addSecondary: function (module) {
 						//Log.log("MMM-Netatmo addSecondary module: " + module.module_name);
-						let result = $("<div/>").addClass("secondary");
+						let result = el("div", "secondary");
 						switch (module.type) {
 							case NetatmoModuleType.MAIN:
 							case NetatmoModuleType.INDOOR:
-								result.append(this.displayCO2(module));
+								append(result, this.displayCO2(module));
 								break;
 							case NetatmoModuleType.OUTDOOR:
-								result.append(this.displayAQI(module));
+								append(result, this.displayAQI(module));
 								break;
 							case NetatmoModuleType.RAIN:
-								result.append(this.displayRainDrops(module));
+								append(result, this.displayRainDrops(module));
 								break;
 							case NetatmoModuleType.WIND:
-								result.append(this.displayWindAngle(module));
+								append(result, this.displayWindAngle(module));
 								break;
 							default:
 								break;
@@ -691,37 +505,36 @@ Module.register("MMM-Netatmo", {
 							displayLastSeen = that.config.showLastMessage && duration > that.config.lastMessageThreshold;
 						}
 						if (displayLastSeen) {
-							$("<div/>").addClass("displayLastSeen")
-								.addClass("small flash")
-								.append(
-									translator.bind(that)(NetatmoDataType.LAST_MESSAGE.toUpperCase())
-									+ ": "
-									+ moment.unix(lastMessage).fromNow()
-								)
-								.appendTo(parentresult);
+							let node = el("div", "displayLastSeen small flash");
+							append(node,
+								translator.bind(that)(NetatmoDataType.LAST_MESSAGE.toUpperCase())
+								+ ": "
+								+ moment.unix(lastMessage).fromNow()
+							);
+							append(parentresult, node);
 						}
 						return displayLastSeen;
 					},
 					addData: function (module) {
 						//Log.log("MMM-Netatmo addData module: " + module.module_name);
-						let result = $("<div/>").addClass("displayData");
+						let result = el("div", "displayData");
 						switch (module.type) {
 							case NetatmoModuleType.MAIN:
-								this.displayData(module, NetatmoDataType.HUMIDITY, true).appendTo(result);
-								this.displayData(module, NetatmoDataType.NOISE, true).appendTo(result);
-								this.displayData(module, NetatmoDataType.PRESSURE, true).appendTo(result);
+								append(result, this.displayData(module, NetatmoDataType.HUMIDITY, true));
+								append(result, this.displayData(module, NetatmoDataType.NOISE, true));
+								append(result, this.displayData(module, NetatmoDataType.PRESSURE, true));
 								break;
 							case NetatmoModuleType.INDOOR:
-								this.displayData(module, NetatmoDataType.HUMIDITY, true).appendTo(result);
+								append(result, this.displayData(module, NetatmoDataType.HUMIDITY, true));
 								break;
 							case NetatmoModuleType.OUTDOOR:
-								this.displayData(module, NetatmoDataType.HUMIDITY, true).appendTo(result);
+								append(result, this.displayData(module, NetatmoDataType.HUMIDITY, true));
 								if (that.config.displayRainInOutdoor && ModuleTypeMap.has(NetatmoModuleType.RAIN)) {
 									// Add Raindata to Outdoor
 									let moduleName = ModuleTypeMap.get(NetatmoModuleType.RAIN);
 									if (ModuleMap.has(moduleName)) {
 										let rainModule = ModuleMap.get(moduleName);
-										this.displayData(rainModule, NetatmoDataType.RAIN, true).appendTo(result);
+										append(result, this.displayData(rainModule, NetatmoDataType.RAIN, true));
 									}
 								}
 								if (that.config.displayWindInOutdoor && ModuleTypeMap.has(NetatmoModuleType.WIND)) {
@@ -729,7 +542,7 @@ Module.register("MMM-Netatmo", {
 									let moduleName = ModuleTypeMap.get(NetatmoModuleType.WIND);
 									if (ModuleMap.has(moduleName)) {
 										let rainModule = ModuleMap.get(moduleName);
-										this.displayData(rainModule, NetatmoDataType.WIND_STRENGTH, true).appendTo(result);
+										append(result, this.displayData(rainModule, NetatmoDataType.WIND_STRENGTH, true));
 									}
 								}
 
@@ -741,22 +554,22 @@ Module.register("MMM-Netatmo", {
 						return result;
 					},
 					addStatus: function (module) {
-						let result = $("<div/>").addClass("displayStatus");
+						let result = el("div", "displayStatus");
 						switch (module.type) {
 							case NetatmoModuleType.MAIN:
-								this.displayData(module, NetatmoDataType.WIFI, false).appendTo(result);
+								append(result, this.displayData(module, NetatmoDataType.WIFI, false));
 								if (that.config.showModuleFirmware) {
-									this.displayData(module, NetatmoDataType.FIRMWARE, false).appendTo(result);
+									append(result, this.displayData(module, NetatmoDataType.FIRMWARE, false));
 								}
 								break;
 							case NetatmoModuleType.INDOOR:
 							case NetatmoModuleType.OUTDOOR:
 							case NetatmoModuleType.RAIN:
 							case NetatmoModuleType.WIND:
-								this.displayData(module, NetatmoDataType.RADIO, false).appendTo(result);
-								this.displayData(module, NetatmoDataType.BATTERY, false).appendTo(result);
+								append(result, this.displayData(module, NetatmoDataType.RADIO, false));
+								append(result, this.displayData(module, NetatmoDataType.BATTERY, false));
 								if (that.config.showModuleFirmware) {
-									this.displayData(module, NetatmoDataType.FIRMWARE, false).appendTo(result);
+									append(result, this.displayData(module, NetatmoDataType.FIRMWARE, false));
 								}
 							default:
 								break;
@@ -764,7 +577,7 @@ Module.register("MMM-Netatmo", {
 						return result;
 					},
 					displayTemp: function (module) {
-						var result = $("<div/>").addClass("displayTemp");
+						var result = el("div", "displayTemp");
 						let datatype = NetatmoDataType.TEMPERATURE;
 						let value = this.getValue(module, NetatmoDataType.TEMPERATURE, true, false);
 						let valueMin = this.getValue(module, NetatmoDataType.TEMP_MIN, true, false);
@@ -772,118 +585,133 @@ Module.register("MMM-Netatmo", {
 						let valueTrend = this.getValue(module, NetatmoDataType.TEMP_TREND, true, false);
 
 						// MAIN Data
-						let divData = $("<div/>").addClass(datatype);
-						let divDataContainer = $("<div/>").addClass("data_container");
-						let divDataLeft = $("<div/>").addClass("data_left").addClass("large light bright").append(formatter.value(datatype, value));
-						let divDataRight = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("small light bright").addClass("data_right_up").append(this.getUnit(datatype))
-						).append(
-							$("<div/>").addClass("medium light bright").addClass("data_right_down").addClass(formatter.icon(NetatmoDataType.TEMP_TREND, valueTrend))
-						);
+						let divData = el("div", datatype);
+						let divDataContainer = el("div", "data_container");
+						let divDataLeft = el("div", "data_left large light bright");
+						append(divDataLeft, formatter.value(datatype, value));
+						let divDataRight = el("div", "data_right");
+						let divDataRightUp = el("div", "small light bright data_right_up");
+						append(divDataRightUp, this.getUnit(datatype));
+						append(divDataRight, divDataRightUp);
+						append(divDataRight, el("div", cls("medium light bright data_right_down", formatter.icon(NetatmoDataType.TEMP_TREND, valueTrend))));
 
-						divDataLeft.appendTo(divDataContainer);
-						divDataRight.appendTo(divDataContainer);
-						divDataContainer.appendTo(divData);
+						append(divDataContainer, divDataLeft);
+						append(divDataContainer, divDataRight);
+						append(divData, divDataContainer);
 
 						// DATA TEMP MIN MAX
-						let divDataContainerBottom = $("<div/>").addClass("data_container_align");
-						let divDCBottomMin = $("<div/>").addClass("data_container");
-						let divDCBottomMax = $("<div/>").addClass("data_container");
-						let divDataIconMin = $("<div/>").addClass("data_icon").addClass("small light dimmed").addClass(formatter.icon(NetatmoDataType.TEMP_MIN));
-						let divDataIconMax = $("<div/>").addClass("data_icon").addClass("small light dimmed").addClass(formatter.icon(NetatmoDataType.TEMP_MAX));
-						let divDataLeftMin = $("<div/>").addClass("data_left").addClass("small").append(" " + formatter.value(datatype, valueMin));
-						let divDataRightMin = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("xxsmall light").addClass("data_right_up").append(this.getUnit(NetatmoDataType.TEMP_MIN))
-						);
-						let divDataLeftMax = $("<div/>").addClass("data_left").addClass("small").append(" " + formatter.value(datatype, valueMax));
-						let divDataRightMax = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("xxsmall light").addClass("data_right_up").append(this.getUnit(NetatmoDataType.TEMP_MAX))
-						);
-						divDataIconMin.appendTo(divDCBottomMin);
-						divDataLeftMin.appendTo(divDCBottomMin);
-						divDataRightMin.appendTo(divDCBottomMin);
-						divDataIconMax.appendTo(divDCBottomMax);
-						divDataLeftMax.appendTo(divDCBottomMax);
-						divDataRightMax.appendTo(divDCBottomMax);
-						divDCBottomMin.appendTo(divDataContainerBottom);
-						divDCBottomMax.appendTo(divDataContainerBottom);
-						divDataContainerBottom.appendTo(divData);
-						divData.appendTo(result);
+						let divDataContainerBottom = el("div", "data_container_align");
+						let divDCBottomMin = el("div", "data_container");
+						let divDCBottomMax = el("div", "data_container");
+						let divDataIconMin = el("div", cls("data_icon small light dimmed", formatter.icon(NetatmoDataType.TEMP_MIN)));
+						let divDataIconMax = el("div", cls("data_icon small light dimmed", formatter.icon(NetatmoDataType.TEMP_MAX)));
+						let divDataLeftMin = el("div", "data_left small");
+						append(divDataLeftMin, " " + formatter.value(datatype, valueMin));
+						let divDataRightMin = el("div", "data_right");
+						let divDataRightUpMin = el("div", "xxsmall light data_right_up");
+						append(divDataRightUpMin, this.getUnit(NetatmoDataType.TEMP_MIN));
+						append(divDataRightMin, divDataRightUpMin);
+						let divDataLeftMax = el("div", "data_left small");
+						append(divDataLeftMax, " " + formatter.value(datatype, valueMax));
+						let divDataRightMax = el("div", "data_right");
+						let divDataRightUpMax = el("div", "xxsmall light data_right_up");
+						append(divDataRightUpMax, this.getUnit(NetatmoDataType.TEMP_MAX));
+						append(divDataRightMax, divDataRightUpMax);
+						append(divDCBottomMin, divDataIconMin);
+						append(divDCBottomMin, divDataLeftMin);
+						append(divDCBottomMin, divDataRightMin);
+						append(divDCBottomMax, divDataIconMax);
+						append(divDCBottomMax, divDataLeftMax);
+						append(divDCBottomMax, divDataRightMax);
+						append(divDataContainerBottom, divDCBottomMin);
+						append(divDataContainerBottom, divDCBottomMax);
+						append(divData, divDataContainerBottom);
+						append(result, divData);
 						return result;
 					},
 
 					displayCO2: function (module) {
 
 						let datatype = NetatmoDataType.CO2;
-						let result = $("<div/>").addClass("displayCO2");
+						let result = el("div", "displayCO2");
 						let value = this.getValue(module, datatype, true, false);
+						let status = formatter.status(datatype, value);
+						let statusClass = this.co2ColorClass[status] || "";
+						let labelKey = this.co2GaugeLabelKey[status];
 
-						$("<div/>").addClass(datatype).append(
-							$("<div/>").addClass("small visual").addClass(formatter.status(datatype, value))
-						).append(
-							$("<div/>").addClass("small value").append(formatter.value(datatype, value) + this.getUnit(datatype))
-						).appendTo(result);
+						let divData = el("div", cls(datatype, statusClass));
+						let angle = formatter.co2GaugeAngle(value);
+						let gaugeValue = formatter.value(datatype, value) + this.getUnit(datatype);
+						let gaugeLabel = labelKey ? translator.bind(that)(labelKey) : "";
+						append(divData, this.buildGaugeBlock(angle, this.co2GaugeGradientColors, "co2", gaugeValue, gaugeLabel));
+						append(result, divData);
 
 						return result;
 					},
 					displayRain: function (module) {
-						var result = $("<div/>").addClass("displayRain");
+						var result = el("div", "displayRain");
 						let datatype = NetatmoDataType.RAIN;
 						let value = this.getValue(module, NetatmoDataType.RAIN, true, false);
 						let value1h = this.getValue(module, NetatmoDataType.SUM_RAIN_1, true, false);
 						let value24h = this.getValue(module, NetatmoDataType.SUM_RAIN_24, true, false);
 
 						// MAIN DATA
-						let divData = $("<div/>").addClass(datatype);
-						let divDataContainer = $("<div/>").addClass("data_container");
-						let divDataLeft = $("<div/>").addClass("data_left").addClass("large light bright").append(formatter.value(datatype, value));
-						let divDataRight = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("small light bright").addClass("data_right_up").append(this.getUnit(datatype))
-						);
+						let divData = el("div", datatype);
+						let divDataContainer = el("div", "data_container");
+						let divDataLeft = el("div", "data_left large light bright");
+						append(divDataLeft, formatter.value(datatype, value));
+						let divDataRight = el("div", "data_right");
+						let divDataRightUp = el("div", "small light bright data_right_up");
+						append(divDataRightUp, this.getUnit(datatype));
+						append(divDataRight, divDataRightUp);
 
-						divDataLeft.appendTo(divDataContainer);
-						divDataRight.appendTo(divDataContainer);
-						divDataContainer.appendTo(divData);
+						append(divDataContainer, divDataLeft);
+						append(divDataContainer, divDataRight);
+						append(divData, divDataContainer);
 
 						// DATA Rain 1H and 24H
-						let divDataContainerBottom = $("<div/>").addClass("data_container_align");
-						let divDCBottom1 = $("<div/>").addClass("data_container");
-						let divDCBottom24 = $("<div/>").addClass("data_container");
-						let divDataIcon1 = $("<div/>").addClass("data_icon").addClass("small light dimmed").addClass(formatter.icon(NetatmoDataType.SUM_RAIN_1));
-						let divDataIcon24 = $("<div/>").addClass("data_icon").addClass("small light dimmed").addClass(formatter.icon(NetatmoDataType.SUM_RAIN_24));
-						let divDataLeft1 = $("<div/>").addClass("data_left").addClass("small").append(" " + formatter.value(datatype, value1h));
-						let divDataRight1 = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("xxsmall light").addClass("data_right_up").append(this.getUnit(NetatmoDataType.SUM_RAIN_1))
-						);
-						let divDataLeft24 = $("<div/>").addClass("data_left").addClass("small").append(" " + formatter.value(datatype, value24h));
-						let divDataRight24 = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("xxsmall light").addClass("data_right_up").append(this.getUnit(NetatmoDataType.SUM_RAIN_24))
-						);
-						divDataIcon1.appendTo(divDCBottom1);
-						divDataLeft1.appendTo(divDCBottom1);
-						divDataRight1.appendTo(divDCBottom1);
-						divDataIcon24.appendTo(divDCBottom24);
-						divDataLeft24.appendTo(divDCBottom24);
-						divDataRight24.appendTo(divDCBottom24);
-						divDCBottom1.appendTo(divDataContainerBottom);
-						divDCBottom24.appendTo(divDataContainerBottom);
-						divDataContainerBottom.appendTo(divData);
-						divData.appendTo(result);
+						let divDataContainerBottom = el("div", "data_container_align");
+						let divDCBottom1 = el("div", "data_container");
+						let divDCBottom24 = el("div", "data_container");
+						let divDataIcon1 = el("div", cls("data_icon small light dimmed", formatter.icon(NetatmoDataType.SUM_RAIN_1)));
+						let divDataIcon24 = el("div", cls("data_icon small light dimmed", formatter.icon(NetatmoDataType.SUM_RAIN_24)));
+						let divDataLeft1 = el("div", "data_left small");
+						append(divDataLeft1, " " + formatter.value(datatype, value1h));
+						let divDataRight1 = el("div", "data_right");
+						let divDataRightUp1 = el("div", "xxsmall light data_right_up");
+						append(divDataRightUp1, this.getUnit(NetatmoDataType.SUM_RAIN_1));
+						append(divDataRight1, divDataRightUp1);
+						let divDataLeft24 = el("div", "data_left small");
+						append(divDataLeft24, " " + formatter.value(datatype, value24h));
+						let divDataRight24 = el("div", "data_right");
+						let divDataRightUp24 = el("div", "xxsmall light data_right_up");
+						append(divDataRightUp24, this.getUnit(NetatmoDataType.SUM_RAIN_24));
+						append(divDataRight24, divDataRightUp24);
+						append(divDCBottom1, divDataIcon1);
+						append(divDCBottom1, divDataLeft1);
+						append(divDCBottom1, divDataRight1);
+						append(divDCBottom24, divDataIcon24);
+						append(divDCBottom24, divDataLeft24);
+						append(divDCBottom24, divDataRight24);
+						append(divDataContainerBottom, divDCBottom1);
+						append(divDataContainerBottom, divDCBottom24);
+						append(divData, divDataContainerBottom);
+						append(result, divData);
 						return result;
 					},
 					displayRainDrops: function (module) {
 
 						let datatype = NetatmoDataType.RAIN;
-						let result = $("<div/>").addClass("displayRainDrops");
+						let result = el("div", "displayRainDrops");
 
-						$("<div/>").addClass(datatype).append(
-							$("<div/>").addClass("xlarge").addClass("wi wi-raindrops")
-						).appendTo(result);
+						let divData = el("div", datatype);
+						append(divData, el("div", "xlarge wi wi-raindrops"));
+						append(result, divData);
 
 						return result;
 					},
 					displayWind: function (module) {
-						var result = $("<div/>").addClass("displayWind");
+						var result = el("div", "displayWind");
 						let datatype = NetatmoDataType.WIND_STRENGTH;
 						let value = this.getValue(module, datatype, true, false);
 						let valueGustAngle = this.getValue(module, NetatmoDataType.GUST_ANGLE, true, false);
@@ -892,61 +720,63 @@ Module.register("MMM-Netatmo", {
 						let valueMaxStrength = this.getValue(module, NetatmoDataType.WIND_STRENGTH_MAX, true, false);
 
 						// MAIN Data
-						let divData = $("<div/>").addClass(datatype);
-						let divDataContainer = $("<div/>").addClass("data_container");
-						let divDataLeft = $("<div/>").addClass("data_left").addClass("large light bright").append(formatter.value(datatype, value));
-						let divDataRight = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("small light bright").addClass("data_right_up").append(this.getUnit(datatype))
-						).append(
-							$("<div/>").addClass("medium light bright").addClass("data_right_down").addClass(formatter.icon(NetatmoDataType.WIND_STRENGTH, value))
-						);
+						let divData = el("div", datatype);
+						let divDataContainer = el("div", "data_container");
+						let divDataLeft = el("div", "data_left large light bright");
+						append(divDataLeft, formatter.value(datatype, value));
+						let divDataRight = el("div", "data_right");
+						let divDataRightUp = el("div", "small light bright data_right_up");
+						append(divDataRightUp, this.getUnit(datatype));
+						append(divDataRight, divDataRightUp);
+						append(divDataRight, el("div", cls("medium light bright data_right_down", formatter.icon(NetatmoDataType.WIND_STRENGTH, value))));
 
-						divDataLeft.appendTo(divDataContainer);
-						divDataRight.appendTo(divDataContainer);
-						divDataContainer.appendTo(divData);
+						append(divDataContainer, divDataLeft);
+						append(divDataContainer, divDataRight);
+						append(divData, divDataContainer);
 
 						// DATA GUST and MAX
-						let divDataContainerBottom = $("<div/>").addClass("data_container_align");
-						let divDCBottomGust = $("<div/>").addClass("data_container");
-						let divDCBottomMax = $("<div/>").addClass("data_container");
-						let divDataIconGust = $("<div/>").addClass("data_icon").addClass("small light dimmed").addClass(formatter.icon(NetatmoDataType.GUST_ANGLE, valueGustAngle));
-						let divDataIconMax = $("<div/>").addClass("data_icon").addClass("small light dimmed").addClass(formatter.icon(NetatmoDataType.WIND_ANGLE_MAX, valueMaxAngle));
-						let divDataLeftGust = $("<div/>").addClass("data_left").addClass("small").append(" " + formatter.value(NetatmoDataType.GUST_STRENGTH, valueGustStrength));
-						let divDataRightGust = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("small light").addClass("data_right_up").addClass(formatter.icon(NetatmoDataType.GUST_STRENGTH, valueGustStrength))
-						);
-						let divDataLeftMax = $("<div/>").addClass("data_left").addClass("small").append(" " + formatter.value(NetatmoDataType.WIND_STRENGTH_MAX, valueMaxStrength));
-						let divDataRightMax = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("small light").addClass("data_right_up").addClass(formatter.icon(NetatmoDataType.WIND_STRENGTH_MAX, valueMaxStrength))
-						);
-						divDataIconGust.appendTo(divDCBottomGust);
-						divDataLeftGust.appendTo(divDCBottomGust);
-						divDataRightGust.appendTo(divDCBottomGust);
-						divDataIconMax.appendTo(divDCBottomMax);
-						divDataLeftMax.appendTo(divDCBottomMax);
-						divDataRightMax.appendTo(divDCBottomMax);
-						divDCBottomGust.appendTo(divDataContainerBottom);
-						divDCBottomMax.appendTo(divDataContainerBottom);
-						divDataContainerBottom.appendTo(divData);
-						divData.appendTo(result);
+						let divDataContainerBottom = el("div", "data_container_align");
+						let divDCBottomGust = el("div", "data_container");
+						let divDCBottomMax = el("div", "data_container");
+						let divDataIconGust = el("div", cls("data_icon small light dimmed", formatter.icon(NetatmoDataType.GUST_ANGLE, valueGustAngle)));
+						let divDataIconMax = el("div", cls("data_icon small light dimmed", formatter.icon(NetatmoDataType.WIND_ANGLE_MAX, valueMaxAngle)));
+						let divDataLeftGust = el("div", "data_left small");
+						append(divDataLeftGust, " " + formatter.value(NetatmoDataType.GUST_STRENGTH, valueGustStrength));
+						let divDataRightGust = el("div", cls("data_right"));
+						append(divDataRightGust, el("div", cls("small light data_right_up", formatter.icon(NetatmoDataType.GUST_STRENGTH, valueGustStrength))));
+						let divDataLeftMax = el("div", "data_left small");
+						append(divDataLeftMax, " " + formatter.value(NetatmoDataType.WIND_STRENGTH_MAX, valueMaxStrength));
+						let divDataRightMax = el("div", "data_right");
+						append(divDataRightMax, el("div", cls("small light data_right_up", formatter.icon(NetatmoDataType.WIND_STRENGTH_MAX, valueMaxStrength))));
+						append(divDCBottomGust, divDataIconGust);
+						append(divDCBottomGust, divDataLeftGust);
+						append(divDCBottomGust, divDataRightGust);
+						append(divDCBottomMax, divDataIconMax);
+						append(divDCBottomMax, divDataLeftMax);
+						append(divDCBottomMax, divDataRightMax);
+						append(divDataContainerBottom, divDCBottomGust);
+						append(divDataContainerBottom, divDCBottomMax);
+						append(divData, divDataContainerBottom);
+						append(result, divData);
 						return result;
 					},
 					displayWindAngle: function (module) {
-						var result = $("<div/>").addClass("displayWindAngle");
+						var result = el("div", "displayWindAngle");
 						let datatype = NetatmoDataType.WIND_ANGLE;
 						let value = this.getValue(module, datatype, true, false);
 						let icon = formatter.icon(datatype, value);
 
-						$("<div/>").addClass(datatype).append(
-							$("<div/>").addClass("x-medium").addClass(icon)
-						).append(
-							$("<div/>").addClass("small value").append(translator.bind(that)(formatter.deg2Cardinal(value).toUpperCase()) + " | " + value + this.getUnit(datatype))
-						).appendTo(result);
+						let divData = el("div", datatype);
+						append(divData, el("div", cls("x-medium", icon)));
+						let divValue = el("div", "small value");
+						append(divValue, translator.bind(that)(formatter.deg2Cardinal(value).toUpperCase()) + " | " + value + this.getUnit(datatype));
+						append(divData, divValue);
+						append(result, divData);
 						return result;
 					},
 					displayData: function (module, datatype, isDashboardData) {
 						let displayclass = "display" + datatype;
-						let result = $("<div/>").addClass(displayclass);
+						let result = el("div", displayclass);
 						let value = this.getValue(module, datatype, isDashboardData, false);
 						let dataIcon = formatter.icon(datatype, value);
 						const statusCircle = "fa fa-circle fa-xs";
@@ -979,43 +809,130 @@ Module.register("MMM-Netatmo", {
 								break;
 						}
 
-						let divData = $("<div/>").addClass(datatype);
-						let divDataHeader = $("<div/>").addClass("xxsmall dimmed").append(translator.bind(that)(datatype.toUpperCase()).toUpperCase());
-						let divDataIcon = $("<div/>").addClass("data_icon").addClass("xsmall light dimmed").addClass(dataIcon);
-						let divDataContainer = $("<div/>").addClass("data_container");
-						let divDataLeft = $("<div/>").addClass("data_left").addClass("small light bright").append(formatter.value(datatype, value));
-						let divDataRight = $("<div/>").addClass("data_right").append(
-							$("<div/>").addClass("xxsmall light bright").addClass("data_right_up").append(this.getUnit(datatype))
-						);
+						let divData = el("div", datatype);
+						// translations can carry markup (e.g. CO2 -> "CO<sub>2</sub>"), so this
+						// goes through appendMarkup like jQuery's .append(string) always did --
+						// safe here because the content is developer-authored translation text,
+						// never Netatmo/aqicn-sourced.
+						let divDataHeader = el("div", "xxsmall dimmed");
+						appendMarkup(divDataHeader, translator.bind(that)(datatype.toUpperCase()).toUpperCase());
+						let divDataIcon = el("div", cls("data_icon xsmall light dimmed", dataIcon));
+						let divDataContainer = el("div", "data_container");
+						let divDataLeft = el("div", "data_left small light bright");
+						append(divDataLeft, formatter.value(datatype, value));
+						let divDataRight = el("div", "data_right");
+						let divDataRightUp = el("div", "xxsmall light bright data_right_up");
+						append(divDataRightUp, this.getUnit(datatype));
+						append(divDataRight, divDataRightUp);
 
-						if (statusIcon !== "") { $("<div/>").addClass("xxsmall light bright").addClass("data_right_down_status").addClass(statusIcon).addClass(statusClass).appendTo(divDataRight); }
-						if (trendIcon !== "") { $("<div/>").addClass("xsmall light bright").addClass("data_right_down").addClass(trendIcon).appendTo(divDataRight); }
-						if (that.config.showDataIcon) { divDataIcon.appendTo(divDataContainer); }
-						if (that.config.showDataHeader) { divDataHeader.appendTo(divData); }
-						divDataLeft.appendTo(divDataContainer);
-						divDataRight.appendTo(divDataContainer);
-						divDataContainer.appendTo(divData);
-						divData.appendTo(result);
+						if (statusIcon !== "") { append(divDataRight, el("div", cls("xxsmall light bright data_right_down_status", statusIcon, statusClass))); }
+						if (trendIcon !== "") { append(divDataRight, el("div", cls("xsmall light bright data_right_down", trendIcon))); }
+						if (that.config.showDataIcon) { append(divDataContainer, divDataIcon); }
+						if (that.config.showDataHeader) { append(divData, divDataHeader); }
+						append(divDataContainer, divDataLeft);
+						append(divDataContainer, divDataRight);
+						append(divData, divDataContainer);
+						append(result, divData);
 
 						return result;
 					},
-					displayAQI: function (module) {
-						let result = $("<div/>").addClass("displayAQI");
-						var statusAirQuality = isNaN(AirQualityValue) ? "textgray"
-							: AirQualityValue < 51 ? "textgreen"
-								: AirQualityValue < 101 ? "textyellow"
-									: AirQualityValue < 151 ? "textorange"
-										: AirQualityValue < 201 ? "textred"
-											: AirQualityValue < 301 ? "textpurple"
-												: "textdeepred";
+					aqiColorClass: {
+						UNDEFINED: "textgray",
+						AQI_GOOD: "textgreen",
+						AQI_MODERATE: "textyellow",
+						AQI_UNHEALTHY_SENSITIVE: "textorange",
+						AQI_UNHEALTHY: "textred",
+						AQI_VERY_UNHEALTHY: "textpurple",
+						AQI_HAZARDOUS: "textdeepred"
+					},
+					// Same 6 colors as aqiColorClass's .textXXX rules in MMM-netatmo.css, in
+					// AQI-ascending order -- duplicated here because SVG gradient stops need
+					// literal color values, not CSS classes.
+					aqiGaugeGradientColors: ["#32cd32", "#cacd32", "#ffa500", "#ff0000", "#361b80", "#6e0202"],
+					co2ColorClass: { good: "textgreen", average: "textorange", bad: "textred" },
+					co2GaugeLabelKey: { good: "CO2_GOOD", average: "CO2_AVERAGE", bad: "CO2_BAD" },
+					// Same 3 colors as co2ColorClass's .textXXX rules, in ascending order.
+					co2GaugeGradientColors: ["#32cd32", "#ffa500", "#ff0000"],
+					// A gauge that fills from left to right and sweeps through `gradientColors`
+					// as the value rises, https://helpcenter.netatmo.com/hc/en-us/articles/17069028550930.
+					// `idSuffix` need only be unique per gauge on the page (see call sites).
+					buildGauge: function (angle, gradientColors, idSuffix) {
+						var cx = 100, cy = 105, r = 85, strokeWidth = 16;
+						var svg = svgEl("svg", { "class": "gauge", viewBox: "0 0 200 120" });
 
-						$("<div/>").addClass("AQI").append(
-							$("<div/>").addClass("medium light").append(AirQualityImpact)
-						).append(
-							$("<span/>").addClass("fa fa-leaf").addClass(statusAirQuality)
-						).append(
-							$("<span/>").addClass("small value").append(" AQI: " + AirQualityValue)
-						).appendTo(result);
+						// Scoped to this module instance's identifier so multiple MMM-Netatmo
+						// instances on one page (each with their own gauges) don't collide on the id.
+						var gradientId = "gaugeGradient-" + idSuffix + "-" + that.identifier;
+						var gradient = svgEl("linearGradient", {
+							id: gradientId,
+							gradientUnits: "userSpaceOnUse",
+							x1: cx - r, y1: cy, x2: cx + r, y2: cy
+						});
+						gradientColors.forEach(function (color, i) {
+							append(gradient, svgEl("stop", {
+								offset: (i / (gradientColors.length - 1) * 100) + "%",
+								"stop-color": color
+							}));
+						});
+						var defs = svgEl("defs");
+						append(defs, gradient);
+						append(svg, defs);
+
+						// Full-width dim track, always visible, so the ungauged remainder still reads as a gauge.
+						append(svg, svgEl("path", {
+							"class": "gaugeTrack",
+							d: gaugeArcPath(cx, cy, r, 0, 180),
+							fill: "none",
+							"stroke-width": strokeWidth,
+							"stroke-linecap": "round"
+						}));
+
+						// Filled portion, clipped to the current value's position on the same
+						// fixed (userSpaceOnUse) gradient, so only the colors up to that point show.
+						if (angle > 0) {
+							append(svg, svgEl("path", {
+								"class": "gaugeFill",
+								d: gaugeArcPath(cx, cy, r, 0, angle),
+								fill: "none",
+								stroke: "url(#" + gradientId + ")",
+								"stroke-width": strokeWidth,
+								"stroke-linecap": "round"
+							}));
+						}
+
+						return svg;
+					},
+					// Builds the "<gauge><value/label centered in it>" block shared by the
+					// AQI and CO2 displays.
+					buildGaugeBlock: function (angle, gradientColors, idSuffix, value, label) {
+						let gaugeWrap = el("div", "gaugeWrap");
+						append(gaugeWrap, this.buildGauge(angle, gradientColors, idSuffix));
+						let gaugeText = el("div", "gaugeText");
+						let gaugeValue = el("div", "gaugeValue");
+						append(gaugeValue, value);
+						let gaugeLabel = el("div", "gaugeLabel");
+						setText(gaugeLabel, label);
+						append(gaugeText, gaugeValue);
+						append(gaugeText, gaugeLabel);
+						append(gaugeWrap, gaugeText);
+						return gaugeWrap;
+					},
+					displayAQI: function (module) {
+						let result = el("div", "displayAQI");
+						var category = formatter.aqiCategory(AirQualityValue);
+						var statusAirQuality = this.aqiColorClass[category];
+
+						let divAQI = el("div", cls("AQI", statusAirQuality));
+						let angle = formatter.aqiGaugeAngle(AirQualityValue);
+						append(divAQI, this.buildGaugeBlock(angle, this.aqiGaugeGradientColors, "aqi", AirQualityValue, AirQualityImpact));
+
+						if (AirQualityPollutant) {
+							let divPollutant = el("div", "aqiPollutant");
+							append(divPollutant, translator.bind(that)("AQI_POLLUTANT") + ": " + AirQualityPollutant);
+							append(divAQI, divPollutant);
+						}
+
+						append(result, divAQI);
 						return result;
 					},
 				};
@@ -1026,10 +943,7 @@ Module.register("MMM-Netatmo", {
 	getScripts: function () {
 		//	      Log.log("Netatmo : getScripts");
 		return [
-			"aqiFeed.js", //AirQuality
-			"String.format.js",
-			"//cdnjs.cloudflare.com/ajax/libs/jquery/2.2.2/jquery.js",
-			"q.min.js",
+			"formatter.js",
 			"moment.js"
 		];
 	},
@@ -1045,7 +959,6 @@ Module.register("MMM-Netatmo", {
 			de: "translations/de.json",
 			en: "translations/en.json",
 			fr: "translations/fr.json",
-			cs: "translations/cs.json",
 			nb: "translations/nb.json",
 			nl: "translations/nl.json",
 			nn: "translations/nn.json"
@@ -1055,17 +968,14 @@ Module.register("MMM-Netatmo", {
 	getDom: function () {
 
 		Log.log("MMM-Netatmo : getDom");
-		var dom = $("<div/>").addClass("MMM-netatmo").addClass(this.config.design);
+		var dom = el("div", cls("MMM-netatmo", this.config.design));
 		if (this.dom) {
-			dom.append(
-				this.dom
-			).append(
-				$("<div/>")
-					.addClass("updated xsmall")
-					.append(moment(new Date(1000 * this.lastUpdate)).fromNow())
-			);
+			append(dom, this.dom);
+			let updated = el("div", "updated xsmall");
+			append(updated, moment(new Date(1000 * this.lastUpdate)).fromNow());
+			append(dom, updated);
 			if (!this.config.hideLoadTimer) {
-				dom.append($(
+				append(dom, parseMarkup(
 					"<svg class=\"loadTimer\" viewbox=\"0 0 250 250\">" +
 					"  <path class=\"border\" transform=\"translate(125, 125)\"/>" +
 					"  <path class=\"loader\" transform=\"translate(125, 125) scale(.84)\"/>" +
@@ -1074,7 +984,7 @@ Module.register("MMM-Netatmo", {
 			}
 
 		} else {
-			dom.append($(
+			append(dom, parseMarkup(
 				"<svg class=\"loading\" xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 100 100\" preserveAspectRatio=\"xMidYMid\">" +
 				"  <circle class=\"outer\"></circle>" +
 				"  <circle class=\"inner\">" +
@@ -1084,6 +994,6 @@ Module.register("MMM-Netatmo", {
 				"</svg>"
 			));
 		}
-		return dom[0];
+		return dom;
 	}
 });

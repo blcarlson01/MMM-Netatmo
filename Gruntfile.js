@@ -7,7 +7,7 @@ module.exports = function (grunt) {
 			}
 		},
 		jsonlint: {
-			src: ["*.json"],
+			src: ["*.json", "translations/*.json"],
 			options: {
 				formatter: "prose",
 				format: true,
@@ -15,30 +15,21 @@ module.exports = function (grunt) {
 			}
 		},
 		yamllint: {
-			src: [".travis.yml", ".codeclimate.yml"],
+			src: [".github/workflows/*.yml"],
 			options: {
 				schema: "DEFAULT_SAFE_SCHEMA"
 			}
 		},
-		csslint: {
-			src: ["netatmo.css"],
-			options: {
-				formatters: [
-					{ id: "lint-xml", dest: "report/csslint.jslint.xml" },
-					{ id: "csslint-xml", dest: "report/csslint.xml" }
-				]
-			}
+		stylelint: {
+			src: ["MMM-netatmo.css"]
 		}
 	});
 
-	//grunt.loadNpmTasks('grunt-contrib-less');
-	//grunt.loadNpmTasks('grunt-contrib-uglify');
-	grunt.loadNpmTasks("grunt-contrib-csslint");
-	//grunt.loadNpmTasks("grunt-contrib-eslint");
 	grunt.loadNpmTasks("grunt-jsonlint");
+	grunt.loadNpmTasks("grunt-stylelint");
 	grunt.loadNpmTasks("grunt-yamllint");
 	grunt.loadNpmTasks("gruntify-eslint");
 
 	grunt.registerTask("default", ["test"]);
-	grunt.registerTask("test", ["eslint", "jsonlint", "csslint", "yamllint"]);
+	grunt.registerTask("test", ["eslint", "jsonlint", "stylelint", "yamllint"]);
 };

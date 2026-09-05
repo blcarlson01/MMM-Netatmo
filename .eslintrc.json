@@ -5,6 +5,9 @@
         "semi": ["error"],
 		"max-len": ["error", 250],
 		"curly": "error",
+		"eqeqeq": "error",
+		"no-cond-assign": ["error", "always"],
+		"no-dupe-keys": "error",
 		"camelcase": ["error", {"properties": "never"}],
         "no-multiple-empty-lines": ["error", { "max": 1, "maxEOF": 1 }],
 		"no-trailing-spaces": ["error", {"ignoreComments": false }],
@@ -13,7 +16,8 @@
 	"env": {
 		"browser": true,
 		"node": true,
-		"es6": true
+		"es6": true,
+		"jest": true
 	},
 	"parserOptions": {
 		"sourceType": "module",

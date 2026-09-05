@@ -33,7 +33,7 @@ All module have the following data:
     "data_type": [],
     "module_name": "Outdoor",
     "firmware": 43,
-    "reachable": true,
+    "reachable": true
 }
 ```
 
@@ -60,7 +60,7 @@ Modules with batteries have the following additional data:
     "place": {
         "altitude": 1797.0131057604,
         "city": "",
-        "": "US",
+        "country": "US",
         "timezone": "",
         "location": [-104.797903, 39.523649]
     },
@@ -72,7 +72,8 @@ Modules with batteries have the following additional data:
         "Noise": 45,
         "Temperature": 20,
         "temp_trend": "up",
-        "Humidity": 43                "Pressure": 998.6,
+        "Humidity": 43,
+        "Pressure": 998.6,
         "pressure_trend": "down",
         "CO2": 469,
         "date_max_temp": 1462731171,

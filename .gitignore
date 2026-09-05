@@ -1,6 +1,6 @@
 # Ignore all node modules.
 node_modules
 report
+coverage
 ws.code-workspace
 MMM-Netatmo.js.20200205
-Releases
