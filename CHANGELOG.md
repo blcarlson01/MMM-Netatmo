@@ -24,6 +24,9 @@ Fork" section for that).
   [Netatmo's current app design](https://helpcenter.netatmo.com/hc/en-us/articles/17069028550930-Outdoor-air-quality-index):
   a semicircular arc that fills left-to-right through a green-to-red gradient as the
   AQI rises, with the value, category, and dominant pollutant centered in the gauge.
+  Fixed at a compact 90px regardless of the module's own width, with the value/label
+  text sized in `cqw` off the gauge's own box (`container-type: inline-size` on
+  `.gaugeWrap`) so it scales cleanly with it instead of tracking the surrounding tile.
 - The same fill-gauge treatment for indoor CO2 (previously a glowing color-coded dot
   next to the ppm reading), using the existing good/average/bad thresholds. The gauge
   rendering itself (`buildGauge`/`buildGaugeBlock` in `MMM-Netatmo.js`) is now shared

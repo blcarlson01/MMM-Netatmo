@@ -296,7 +296,8 @@
 
 .MMM-netatmo .bubbles .module .gaugeWrap {
   position: relative;
-  width: 90%;
+  width: 90px;
+  container-type: inline-size;
 }
 
 .MMM-netatmo .bubbles .module .gauge {
@@ -320,12 +321,12 @@
 }
 
 .MMM-netatmo .bubbles .module .gaugeValue {
-  font-size: 1.4em;
+  font-size: 11cqw;
   font-weight: bold;
 }
 
 .MMM-netatmo .bubbles .module .gaugeLabel {
-  font-size: .6em;
+  font-size: 4.5cqw;
 }
 
 .MMM-netatmo .bubbles .module .aqiPollutant {
